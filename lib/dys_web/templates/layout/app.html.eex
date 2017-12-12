@@ -11,7 +11,7 @@
     <link rel="stylesheet" href="<%= static_path(@conn, "/css/app.css") %>">
     <style media="screen">
       body {
-        background-color: #65e1fd !important;
+        background-color: #bee4ec !important;
       }
     </style>
   </head>

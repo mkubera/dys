@@ -7,7 +7,7 @@ import Json.Decode as JD exposing (field)
 import Dict
 import Set
 import Model exposing (..)
-import View exposing (..)
+import View exposing (view)
 import Sub exposing (..)
 
 
@@ -28,23 +28,39 @@ main =
 -- UPDATE
 
 
-createOutposts : Int -> List Outpost -> List Outpost
-createOutposts n list =
-    case list of
-        [] ->
-            list
+makeDieChosen : Die -> List Die -> List Die
+makeDieChosen die dice =
+    List.map
+        (\d ->
+            case d == die of
+                True ->
+                    { die | chosen = not die.chosen }
 
-        first :: rest ->
-            { first | id = n } :: (createOutposts (n - 1) rest)
+                False ->
+                    d
+        )
+        dice
 
 
-mapTimesN n list =
-    case list of
-        [] ->
-            list
 
-        first :: rest ->
-            (first * n) :: (mapTimesN n rest)
+-- createOutposts : Int -> List Outpost -> List Outpost
+-- createOutposts n list =
+--     case list of
+--         [] ->
+--             list
+--
+--         first :: [] ->
+--             let
+--                 baseShaman =
+--                     base.shaman
+--
+--                 newShaman =
+--                     { baseShaman | id = 1 }
+--             in
+--                 { first | id = n, dice = [ newShaman ] } :: (createOutposts (n - 1) [])
+--
+--         first :: rest ->
+--             { first | id = n } :: (createOutposts (n - 1) rest)
 
 
 filterChosenDiceOutOfRolledDice : List Die -> List Die -> List Die
@@ -57,6 +73,42 @@ filterChosenDiceOutOfRolledDice rolledDice uniqueChosenDice =
                 uniqueChosenDice
         )
         rolledDice
+
+
+costOfDice : List Die -> Location Int -> Int
+costOfDice dice targetLocation =
+    dice
+        |> List.map
+            (\d ->
+                case d.location of
+                    LocationRolled ->
+                        case targetLocation of
+                            LocationRolled ->
+                                0
+
+                            LocationSaved ->
+                                d.mana.rolledToSaved
+
+                            LocationOutpost a ->
+                                d.mana.rolledToOutpost
+
+                    LocationSaved ->
+                        d.mana.rolledToOutpost
+
+                    LocationOutpost a ->
+                        0
+            )
+        |> List.foldl (+) 0
+
+
+hasEnoughMana : Int -> List Die -> Location Int -> Bool
+hasEnoughMana mana dice targetLocation =
+    mana >= (costOfDice dice targetLocation)
+
+
+diceWithinLimit : List Die -> Bool
+diceWithinLimit dice =
+    List.length dice <= 3
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -75,22 +127,44 @@ update msg model =
             in
                 newModel ! []
 
-        StartGame ->
+        StartGame bool ->
             let
                 noOfOutposts =
                     model.settings.noOfOutposts
 
-                newOutposts =
-                    createOutposts noOfOutposts (List.repeat noOfOutposts (Outpost 0 []))
+                baseShaman =
+                    base.shaman
 
+                newShaman =
+                    { baseShaman | id = 1 }
+
+                newOutposts =
+                    initOutposts
+
+                -- createOutposts noOfOutposts (List.repeat noOfOutposts (Outpost 0 [])) |> List.reverse
                 oldState =
                     model.state
 
                 newState =
                     { oldState | gameStarted = True }
 
+                oldFighter =
+                    base.fighter
+
+                oldScout =
+                    base.scout
+
+                newFighter =
+                    { oldFighter | id = 2 }
+
+                newScout =
+                    { oldScout | id = 3 }
+
+                newRolledDice =
+                    [ newFighter, newScout ]
+
                 newModel =
-                    { model | state = newState, outposts = newOutposts }
+                    { model | state = newState, outposts = newOutposts, rolledDice = newRolledDice }
             in
                 newModel ! []
 
@@ -99,59 +173,182 @@ update msg model =
                 newRolledDice =
                     makeDieChosen die model.rolledDice
 
+                newLands =
+                    model.outposts
+                        |> List.map (\l -> { l | cardChosen = (not l.cardChosen) })
+
                 newModel =
-                    { model | rolledDice = newRolledDice }
+                    { model | rolledDice = newRolledDice, outposts = newLands, chosenCard = Just die }
             in
                 newModel ! []
 
-        MoveDiceToOutpost outpostId ->
+        MoveDice targetLocation ->
             let
                 chosenDice =
-                    List.filter (\d -> d.chosen == True) model.rolledDice
+                    model.rolledDice
+                        -- choose chosen dice
+                        |>
+                            List.filter (\d -> d.chosen == True)
+                        -- reset chosen dice
+                        |>
+                            List.map (\d -> { d | chosen = False, exhausted = True })
+
+                l1 =
+                    Debug.log "targetLocation" targetLocation
+
+                l2 =
+                    Debug.log "chosenDice" chosenDice
+
+                hasEnoughMana_ =
+                    hasEnoughMana model.mana chosenDice targetLocation
+
+                targetOutpostId =
+                    case targetLocation of
+                        LocationRolled ->
+                            0
+
+                        LocationSaved ->
+                            0
+
+                        LocationOutpost outpostId ->
+                            outpostId
 
                 newOutposts =
-                    List.map
-                        (\o ->
-                            if o.id == outpostId then
-                                { o | dice = chosenDice ++ o.dice }
-                            else
-                                o
-                        )
-                        model.outposts
+                    case hasEnoughMana_ && (targetOutpostId /= 0) of
+                        True ->
+                            List.map
+                                (\o ->
+                                    if o.id == targetOutpostId then
+                                        let
+                                            newChosenDice =
+                                                chosenDice
+                                                    |> List.map (\d -> { d | location = LocationOutpost targetOutpostId })
+                                        in
+                                            { o | dice = newChosenDice ++ o.dice }
+                                    else
+                                        o
+                                )
+                                model.outposts
 
-                newRolledDice =
-                    filterChosenDiceOutOfRolledDice model.rolledDice chosenDice
-            in
-                { model | outposts = newOutposts, rolledDice = newRolledDice } ! []
-
-        SaveDice chosenDice ->
-            let
-                toggledChosenDice =
-                    List.map (\d -> { d | chosen = False }) chosenDice
+                        False ->
+                            model.outposts
 
                 newSavedDice =
-                    (++) chosenDice model.savedDice
+                    case hasEnoughMana_ && (targetLocation == LocationSaved) && (diceWithinLimit model.savedDice) of
+                        True ->
+                            let
+                                newChosenDice =
+                                    chosenDice
+                                        |> List.map (\d -> { d | location = LocationSaved })
+                            in
+                                (++) newChosenDice model.savedDice
+
+                        False ->
+                            model.savedDice
 
                 newRolledDice =
-                    filterChosenDiceOutOfRolledDice model.rolledDice chosenDice
+                    case hasEnoughMana_ of
+                        True ->
+                            filterChosenDiceOutOfRolledDice model.rolledDice chosenDice
 
-                newModel =
-                    { model | savedDice = newSavedDice, rolledDice = newRolledDice }
+                        False ->
+                            model.rolledDice
+
+                newMana =
+                    case model.mana >= 1 && hasEnoughMana_ of
+                        True ->
+                            model.mana - (costOfDice chosenDice targetLocation)
+
+                        False ->
+                            model.mana
+
+                errMsg =
+                    case hasEnoughMana_ of
+                        True ->
+                            Nothing
+
+                        False ->
+                            Just "Not enough mana."
             in
-                newModel ! []
+                { model
+                    | outposts = newOutposts
+                    , savedDice = newSavedDice
+                    , rolledDice = newRolledDice
+                    , mana = newMana
+                    , errMsg = errMsg
+                }
+                    ! []
 
         EndTurn ->
             let
+                newLandDice =
+                    model.outposts
+                        |> List.map
+                            (\land ->
+                                let
+                                    oldDice =
+                                        land.dice
+
+                                    newDice =
+                                        oldDice
+                                            |> List.map
+                                                (\d ->
+                                                    { d
+                                                        | exhausted = False
+                                                        , chosen = False
+                                                    }
+                                                )
+                                            |> List.map
+                                                (\d ->
+                                                    case land.kind == Heart of
+                                                        True ->
+                                                            matureDie d
+
+                                                        False ->
+                                                            d
+                                                )
+                                in
+                                    { land | dice = newDice }
+                            )
+
+                -- heartDice =
+                --     model.outposts
+                --         |> List.filter (\o -> o.kind == Heart)
+                --
+                -- newSavedDice =
+                --     matureDice heartDice
                 newRolledDice =
-                    tempRolledDice model.turn
+                    case List.length model.rolledDice >= 5 of
+                        True ->
+                            model.rolledDice
+
+                        False ->
+                            (++) model.rolledDice (tempRolledDice ( model.turn, model.unitsProduced ))
 
                 newRolledDiceCount =
                     List.length newRolledDice
+
+                newMaxMana =
+                    case model.maxMana >= 5 of
+                        True ->
+                            model.maxMana
+
+                        False ->
+                            model.maxMana + 1
+
+                newMana =
+                    newMaxMana
             in
                 { model
                     | turn = model.turn + 2
                     , unitsProduced = model.unitsProduced + newRolledDiceCount
+                    , outposts =
+                        newLandDice
+                        -- , savedDice = newSavedDice
                     , rolledDice = newRolledDice
+                    , mana = newMana
+                    , maxMana = newMaxMana
+                    , errMsg = Nothing
                 }
                     ! []
 
@@ -159,105 +356,146 @@ update msg model =
             model ! []
 
 
-matureSavedDice : List Die -> List Die
-matureSavedDice savedDice =
-    savedDice
-        |> List.map (\d -> { d | age = d.age + 1 })
+matureDie : Die -> Die
+matureDie die =
+    case die.kind of
+        Fighter ->
+            let
+                oldMana =
+                    die.mana
+            in
+                case die.age of
+                    1 ->
+                        { die | atk = 6, hp = 20, mana = { oldMana | savedToOutpost = 1 } }
+
+                    3 ->
+                        { die | atk = 7, hp = 22, mana = { oldMana | savedToOutpost = 2 } }
+
+                    5 ->
+                        { die | atk = 8, hp = 25, mana = { oldMana | savedToOutpost = 3 } }
+
+                    _ ->
+                        { die | atk = 8, hp = 25, mana = { oldMana | savedToOutpost = 3 } }
+
+        Scout ->
+            let
+                oldMana =
+                    die.mana
+            in
+                case die.age of
+                    1 ->
+                        { die | hp = 11, mana = { oldMana | savedToOutpost = 1 } }
+
+                    3 ->
+                        { die | hp = 12, mana = { oldMana | savedToOutpost = 2 } }
+
+                    5 ->
+                        { die | hp = 15, mana = { oldMana | savedToOutpost = 3 } }
+
+                    _ ->
+                        { die | hp = 15, mana = { oldMana | savedToOutpost = 3 } }
+
+        Shaman ->
+            let
+                oldMana =
+                    die.mana
+            in
+                case die.age of
+                    1 ->
+                        { die | nomi = 3, mana = { oldMana | savedToOutpost = 1 } }
+
+                    3 ->
+                        { die | nomi = 4, mana = { oldMana | savedToOutpost = 2 } }
+
+                    5 ->
+                        { die | nomi = 7, mana = { oldMana | savedToOutpost = 3 } }
+
+                    _ ->
+                        { die | nomi = 7, mana = { oldMana | savedToOutpost = 3 } }
+
+
+matureDice : List Die -> List Die
+matureDice dice =
+    dice
+        |> List.map
+            (\d ->
+                case d.age >= 5 of
+                    True ->
+                        d
+
+                    False ->
+                        { d | age = d.age + 1 }
+            )
         |> List.map
             (\d ->
                 case d.kind of
                     Fighter ->
-                        case d.age of
-                            1 ->
-                                { d | atk = 6 }
+                        let
+                            oldMana =
+                                d.mana
+                        in
+                            case d.age of
+                                1 ->
+                                    { d | atk = 6, hp = 20, mana = { oldMana | savedToOutpost = 1 } }
 
-                            2 ->
-                                { d | atk = 7, hp = 22 }
+                                3 ->
+                                    { d | atk = 7, hp = 22, mana = { oldMana | savedToOutpost = 2 } }
 
-                            3 ->
-                                { d | atk = 8 }
+                                5 ->
+                                    { d | atk = 8, hp = 25, mana = { oldMana | savedToOutpost = 3 } }
 
-                            4 ->
-                                { d | atk = 9, hp = 24 }
-
-                            5 ->
-                                { d | atk = 10, hp = 28 }
-
-                            _ ->
-                                { d | atk = 10, hp = 28 }
+                                _ ->
+                                    { d | atk = 8, hp = 25, mana = { oldMana | savedToOutpost = 3 } }
 
                     Scout ->
-                        case d.age of
-                            1 ->
-                                { d | hp = 11 }
+                        let
+                            oldMana =
+                                d.mana
+                        in
+                            case d.age of
+                                1 ->
+                                    { d | hp = 11, mana = { oldMana | savedToOutpost = 1 } }
 
-                            2 ->
-                                { d | hp = 12 }
+                                3 ->
+                                    { d | hp = 12, mana = { oldMana | savedToOutpost = 2 } }
 
-                            3 ->
-                                { d | hp = 13 }
+                                5 ->
+                                    { d | hp = 15, mana = { oldMana | savedToOutpost = 3 } }
 
-                            4 ->
-                                { d | hp = 14 }
+                                _ ->
+                                    { d | hp = 15, mana = { oldMana | savedToOutpost = 3 } }
 
-                            5 ->
-                                { d | hp = 15 }
+                    Shaman ->
+                        let
+                            oldMana =
+                                d.mana
+                        in
+                            case d.age of
+                                1 ->
+                                    { d | nomi = 3, mana = { oldMana | savedToOutpost = 1 } }
 
-                            _ ->
-                                { d | hp = 15 }
+                                3 ->
+                                    { d | nomi = 4, mana = { oldMana | savedToOutpost = 2 } }
 
-                    Grower ->
-                        case d.age of
-                            1 ->
-                                { d | hp = 9, nomi = 3 }
+                                5 ->
+                                    { d | nomi = 7, mana = { oldMana | savedToOutpost = 3 } }
 
-                            2 ->
-                                { d | hp = 10, nomi = 4 }
-
-                            3 ->
-                                { d | hp = 11, nomi = 5 }
-
-                            4 ->
-                                { d | hp = 12, nomi = 6 }
-
-                            5 ->
-                                { d | hp = 13, nomi = 7 }
-
-                            _ ->
-                                { d | hp = 13, nomi = 7 }
-
-                    Dreamer ->
-                        case d.age of
-                            1 ->
-                                { d | nomi = 10 }
-
-                            2 ->
-                                { d | nomi = 12, hp = 7 }
-
-                            3 ->
-                                { d | nomi = 14 }
-
-                            4 ->
-                                { d | nomi = 16, hp = 8 }
-
-                            5 ->
-                                { d | nomi = 20, hp = 10 }
-
-                            _ ->
-                                { d | nomi = 20, hp = 10 }
+                                _ ->
+                                    { d | nomi = 7, mana = { oldMana | savedToOutpost = 3 } }
             )
 
 
-tempRolledDice : Int -> List Die
-tempRolledDice turn =
-    if List.member turn [ 1, 5 ] then
-        [ (Die 2 Scout 1 1 5 1 0 False)
-        , (Die 3 Grower 1 1 5 2 0 False)
-        , (Die 4 Dreamer 1 1 3 5 0 False)
-        ]
-    else if List.member turn [ 3, 7 ] then
-        [ (Die 1 Fighter 1 3 10 1 0 False)
-        , (Die 3 Grower 1 1 5 2 0 False)
-        ]
-    else
-        [ (Die 4 Dreamer 1 1 3 5 0 False) ]
+tempRolledDice : ( Int, Int ) -> List Die
+tempRolledDice ( turn, unitsProduced ) =
+    let
+        newFighter =
+            base.fighter
+
+        newScout =
+            base.scout
+    in
+        if List.member turn [ 1, 5, 9, 13 ] then
+            [ { newScout | id = unitsProduced + 1 }
+            ]
+        else
+            [ { newFighter | id = unitsProduced + 1 } ]
